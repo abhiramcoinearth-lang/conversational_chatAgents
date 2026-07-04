@@ -5,7 +5,6 @@ Stores: conversation logs, agent configs, tenant info.
 
 from sqlalchemy import (
     Column, String, Integer, Float, Boolean, DateTime, Text, JSON,
-    create_engine,
 )
 from sqlalchemy.ext.declarative import declarative_base
 from sqlalchemy.sql import func

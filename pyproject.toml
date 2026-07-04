@@ -1,0 +1,17 @@
+[tool.pytest.ini_options]
+asyncio_mode = "auto"
+testpaths = ["tests"]
+markers = [
+    "integration: exercises the full running stack (LLM/Redis/Postgres); skipped in unit CI",
+]
+
+[tool.ruff]
+target-version = "py311"
+line-length = 120
+extend-exclude = ["frontend"]
+
+[tool.ruff.lint]
+# Adopt lint on an existing codebase conservatively: block on real correctness
+# errors (syntax, undefined names, unused imports) rather than style noise.
+# Tighten this ruleset over time.
+select = ["E9", "F"]

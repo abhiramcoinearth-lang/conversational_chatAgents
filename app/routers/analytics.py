@@ -1,7 +1,6 @@
 """Phase 4: Analytics and monitoring router."""
 
 from fastapi import APIRouter, Query
-from datetime import datetime, timedelta
 from app.utils.logger import get_logger
 
 logger = get_logger("analytics")

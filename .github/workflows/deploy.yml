@@ -1,31 +1,74 @@
-name: Deploy to AWS (Mumbai)
+name: CI/CD
 
-# CI/CD: on every push to main, sync the checked-out code to the g4dn.xlarge
-# EC2 instance over SSH and rebuild + restart the stack. The repo is private,
-# so code is pushed from the runner (which already has it via checkout) rather
-# than pulled on the instance — no git credentials live on the server.
+# Full pipeline:
+#   lint  -> ruff static analysis
+#   test  -> pytest unit suite (integration tests excluded)
+#   build -> Docker image build validation (buildx + layer cache)
+#   deploy-> (main pushes only) sync to EC2, rebuild + restart, smoke + e2e test
 #
-# Required GitHub repo secrets (Settings -> Secrets and variables -> Actions):
-#   SSH_HOST         Elastic IP of the EC2 instance (terraform output: instance_public_ip)
-#   SSH_PRIVATE_KEY  Contents of the private key (terraform output: ssh_private_key)
-#   SSH_USER         "ubuntu"
+# CI (lint/test/build) runs on every push and pull request. Deploy runs only
+# after CI passes, and only on pushes to main.
+#
+# Required repo secrets: SSH_HOST, SSH_PRIVATE_KEY, SSH_USER (see README/infra).
 
 on:
   push:
-    branches: [main]
-    # Terraform/docs changes don't affect the running app — skip redeploys for them.
-    paths-ignore:
-      - 'infra/**'
-      - '**.md'
+    paths-ignore: ['infra/**', '**.md']
+  pull_request:
+    paths-ignore: ['infra/**', '**.md']
   workflow_dispatch:
 
 concurrency:
-  group: deploy-production
-  cancel-in-progress: false
+  group: cicd-${{ github.ref }}
+  # Cancel superseded runs on feature branches; never cancel an in-flight main run.
+  cancel-in-progress: ${{ github.ref != 'refs/heads/main' }}
 
 jobs:
-  deploy:
+  lint:
     runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - run: pip install ruff==0.6.9
+      - name: Ruff
+        run: ruff check .
+
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+          cache: 'pip'
+      - name: Install dependencies
+        run: pip install -r requirements.txt pytest pytest-asyncio
+      - name: Pytest (unit)
+        run: pytest -m "not integration" -q
+
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: docker/setup-buildx-action@v3
+      - name: Build app image (validation only)
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          push: false
+          tags: chatagent-app:ci
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
+  deploy:
+    needs: [lint, test, build]
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    concurrency:
+      group: deploy-production
+      cancel-in-progress: false
     steps:
       - uses: actions/checkout@v4
 
@@ -62,4 +105,12 @@ jobs:
       - name: Smoke test /health
         run: |
           sleep 15
-          curl -fsS "http://${{ secrets.SSH_HOST }}/health" | tee /dev/stderr
+          curl -fsS "https://chat.chatbucket.chat/health" | tee /dev/stderr
+
+      - name: E2E chat test
+        run: |
+          body=$(curl -fsS -m 120 -X POST "https://chat.chatbucket.chat/api/chat" \
+            -H "Content-Type: application/json" \
+            -d '{"message":"pipeline e2e check","sector":"retail","src_lang":"ENGLISH","lang":"ENGLISH"}')
+          echo "$body"
+          echo "$body" | grep -q '"reply"' || { echo "no reply in response"; exit 1; }
