@@ -46,9 +46,9 @@ services:
     restart: unless-stopped
 
   app:
-    build:
-      context: ../repo
-      dockerfile: Dockerfile
+    # Immutable image built + pushed by CI (GHCR). IMAGE_TAG (a git SHA) is set
+    # in .env by the deploy job; falls back to :latest.
+    image: ghcr.io/abhiramcoinearth-lang/conversational_chatagents:${IMAGE_TAG:-latest}
     command: >
       uvicorn app.main:app --host 0.0.0.0 --port 5000 --workers 2
     environment:

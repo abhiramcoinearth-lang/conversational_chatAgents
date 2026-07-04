@@ -83,9 +83,7 @@ services:
     restart: unless-stopped
 
   app:
-    build:
-      context: ../repo
-      dockerfile: Dockerfile
+    image: ghcr.io/abhiramcoinearth-lang/conversational_chatagents:$${IMAGE_TAG:-latest}
     command: >
       uvicorn app.main:app --host 0.0.0.0 --port 5000 --workers 2
     environment:
@@ -159,12 +157,10 @@ COMPOSE
 # ubuntu owns the tree so CI/CD (rsync over SSH as ubuntu) can update code.
 chown -R ubuntu:ubuntu "$APP_DIR"
 
-# Bring the stack up only if the app code has already been synced in.
-# On a fresh box the repo is empty; the first deploy (CI/CD or manual rsync)
-# runs `docker compose ... up -d --build`.
-if [ -f "$APP_DIR/repo/Dockerfile" ]; then
-  cd "$APP_DIR/deploy"
-  docker compose -f docker-compose.prod.yml up -d --build
-fi
+# Pre-start the infra services (public images) so llama can warm the model.
+# The app image is private (GHCR) and is pulled + started by the first CI/CD
+# deploy, which authenticates to GHCR and pins IMAGE_TAG.
+cd "$APP_DIR/deploy"
+docker compose -f docker-compose.prod.yml up -d llama redis postgres caddy || true
 
 echo "=== bootstrap done $(date -u) ==="
