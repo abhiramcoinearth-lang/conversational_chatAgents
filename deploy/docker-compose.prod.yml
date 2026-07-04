@@ -36,6 +36,13 @@ services:
       timeout: 5s
       retries: 30
       start_period: 600s   # first boot downloads the model (~7GB)
+    logging:
+      driver: awslogs
+      options:
+        awslogs-region: ap-south-1
+        awslogs-group: /chatagent/app
+        awslogs-stream: llama
+        awslogs-create-group: "true"
     restart: unless-stopped
 
   app:
@@ -63,6 +70,13 @@ services:
         condition: service_started
       postgres:
         condition: service_started
+    logging:
+      driver: awslogs
+      options:
+        awslogs-region: ap-south-1
+        awslogs-group: /chatagent/app
+        awslogs-stream: app
+        awslogs-create-group: "true"
     restart: unless-stopped
 
   redis:

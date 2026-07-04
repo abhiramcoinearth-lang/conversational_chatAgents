@@ -117,6 +117,7 @@ resource "aws_instance" "this" {
     llama_model = var.llama_model
     llama_ctx   = var.llama_ctx
     domain      = var.domain
+    region      = var.region
   })
 
   # Recreate if the bootstrap script changes
