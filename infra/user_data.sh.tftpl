@@ -1,0 +1,156 @@
+#!/bin/bash
+# Bootstrap for the Chat Agent Platform on a Deep Learning GPU AMI (Ubuntu 22.04).
+# The AMI already has: NVIDIA driver, Docker, nvidia-container-toolkit.
+set -euxo pipefail
+exec > >(tee -a /var/log/user-data.log) 2>&1
+echo "=== chatagent bootstrap $(date -u) ==="
+
+export DEBIAN_FRONTEND=noninteractive
+APP_DIR=/opt/chatagent
+
+# --- prerequisites -----------------------------------------------------------
+command -v openssl >/dev/null || { apt-get update -y && apt-get install -y openssl curl rsync; }
+# Ensure the docker compose v2 plugin is present
+if ! docker compose version >/dev/null 2>&1; then
+  apt-get update -y && apt-get install -y docker-compose-plugin || true
+fi
+systemctl enable --now docker || true
+usermod -aG docker ubuntu || true
+
+# --- directories -------------------------------------------------------------
+# The application code is a PRIVATE repo, so it is not cloned here. It is
+# rsynced onto the box by CI/CD (GitHub Actions) or by the operator into
+# $APP_DIR/repo, then built by docker compose. See .github/workflows/deploy.yml.
+rm -rf "$APP_DIR"
+mkdir -p "$APP_DIR/deploy" "$APP_DIR/repo"
+
+# --- secrets -----------------------------------------------------------------
+POSTGRES_PASSWORD=$(openssl rand -hex 24)
+API_SECRET_KEY=$(openssl rand -hex 32)
+
+cat > "$APP_DIR/deploy/.env" <<ENV
+LLAMA_MODEL=${llama_model}
+LLAMA_CTX=${llama_ctx}
+POSTGRES_PASSWORD=$${POSTGRES_PASSWORD}
+API_SECRET_KEY=$${API_SECRET_KEY}
+ENV
+chmod 600 "$APP_DIR/deploy/.env"
+
+# --- Caddyfile ---------------------------------------------------------------
+cat > "$APP_DIR/deploy/Caddyfile" <<'CADDY'
+${domain} {
+	reverse_proxy app:5000
+}
+
+:80 {
+	reverse_proxy app:5000
+}
+CADDY
+
+# --- docker-compose.prod.yml -------------------------------------------------
+cat > "$APP_DIR/deploy/docker-compose.prod.yml" <<'COMPOSE'
+services:
+  llama:
+    image: ghcr.io/ggml-org/llama.cpp:server-cuda
+    command: >
+      -hf $${LLAMA_MODEL:-unsloth/gemma-3-12b-it-GGUF:Q4_K_M}
+      --host 0.0.0.0 --port 8090
+      -c $${LLAMA_CTX:-8192} -ngl 99 --jinja
+    volumes:
+      - llama_cache:/root/.cache/llama.cpp
+    ports:
+      - "127.0.0.1:8090:8090"
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: all
+              capabilities: [gpu]
+    healthcheck:
+      test: ["CMD-SHELL", "curl -sf http://localhost:8090/health || exit 1"]
+      interval: 20s
+      timeout: 5s
+      retries: 30
+      start_period: 600s
+    restart: unless-stopped
+
+  app:
+    build:
+      context: ../repo
+      dockerfile: Dockerfile
+    command: >
+      uvicorn app.main:app --host 0.0.0.0 --port 5000 --workers 2
+    environment:
+      - LLAMA_SERVER_URL=http://llama:8090
+      - REDIS_URL=redis://redis:6379/0
+      - DATABASE_URL=postgresql+asyncpg://postgres:$${POSTGRES_PASSWORD}@postgres:5432/chatagent
+      - CHROMA_PERSIST_DIR=/app/data/chromadb
+      - EMBEDDING_MODEL=all-MiniLM-L6-v2
+      - API_SECRET_KEY=$${API_SECRET_KEY}
+      - RATE_LIMIT=60/minute
+      - MAX_MEMORY_TURNS=20
+      - DEBUG=false
+    volumes:
+      - app_data:/app/data
+    depends_on:
+      llama:
+        condition: service_healthy
+      redis:
+        condition: service_started
+      postgres:
+        condition: service_started
+    restart: unless-stopped
+
+  redis:
+    image: redis:7-alpine
+    command: redis-server --appendonly yes
+    volumes:
+      - redis_data:/data
+    restart: unless-stopped
+
+  postgres:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_DB: chatagent
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: $${POSTGRES_PASSWORD}
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    restart: unless-stopped
+
+  caddy:
+    image: caddy:2-alpine
+    ports:
+      - "80:80"
+      - "443:443"
+    volumes:
+      - ./Caddyfile:/etc/caddy/Caddyfile:ro
+      - caddy_data:/data
+      - caddy_config:/config
+    depends_on:
+      - app
+    restart: unless-stopped
+
+volumes:
+  llama_cache:
+  app_data:
+  redis_data:
+  postgres_data:
+  caddy_data:
+  caddy_config:
+COMPOSE
+
+# --- ownership + launch ------------------------------------------------------
+# ubuntu owns the tree so CI/CD (rsync over SSH as ubuntu) can update code.
+chown -R ubuntu:ubuntu "$APP_DIR"
+
+# Bring the stack up only if the app code has already been synced in.
+# On a fresh box the repo is empty; the first deploy (CI/CD or manual rsync)
+# runs `docker compose ... up -d --build`.
+if [ -f "$APP_DIR/repo/Dockerfile" ]; then
+  cd "$APP_DIR/deploy"
+  docker compose -f docker-compose.prod.yml up -d --build
+fi
+
+echo "=== bootstrap done $(date -u) ==="

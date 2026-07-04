@@ -1,12 +1,21 @@
 # ============ Phase 1: Core Engine ============
 fastapi==0.115.0
 uvicorn[standard]==0.30.0
+# Required by FastAPI for the multipart Form/File upload routes (documents.py)
+python-multipart==0.0.9
 httpx==0.27.0
 pydantic==2.9.0
 pydantic-settings==2.5.0
 python-dotenv==1.0.1
 
 # ============ Phase 2: Intelligence ============
+# chromadb 0.5.0 uses np.float_, removed in NumPy 2.0 — pin numpy to the 1.x line.
+numpy<2
+# The app only needs torch for CPU sentence-transformer embeddings (the LLM runs
+# in the separate llama.cpp GPU container). Pull the CPU wheel so the image stays
+# ~2GB instead of ~9GB of unused CUDA libraries.
+--extra-index-url https://download.pytorch.org/whl/cpu
+torch==2.4.1+cpu
 chromadb==0.5.0
 sentence-transformers==3.0.0
 
