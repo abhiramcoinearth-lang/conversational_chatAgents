@@ -31,17 +31,29 @@ jobs:
           echo "${{ secrets.SSH_PRIVATE_KEY }}" > ~/.ssh/deploy_key
           chmod 600 ~/.ssh/deploy_key
           ssh-keyscan -H "${{ secrets.SSH_HOST }}" >> ~/.ssh/known_hosts 2>/dev/null
+          # Keepalive so a dropped/half-open connection is detected and the step
+          # fails fast instead of hanging; skip host-key prompts on rebuilds.
+          cat > ~/.ssh/config <<'CFG'
+          Host deploy-target
+            HostName ${{ secrets.SSH_HOST }}
+            User ${{ secrets.SSH_USER }}
+            IdentityFile ~/.ssh/deploy_key
+            ServerAliveInterval 15
+            ServerAliveCountMax 4
+            ConnectTimeout 20
+            StrictHostKeyChecking accept-new
+          CFG
 
       - name: Sync code to instance
         run: |
           rsync -az --delete \
             --exclude '.git' --exclude 'data' --exclude 'frontend/dashboard/node_modules' \
-            -e "ssh -i ~/.ssh/deploy_key" \
-            ./ "${{ secrets.SSH_USER }}@${{ secrets.SSH_HOST }}:/opt/chatagent/repo/"
+            -e "ssh -F ~/.ssh/config" \
+            ./ "deploy-target:/opt/chatagent/repo/"
 
       - name: Build + restart stack
         run: |
-          ssh -i ~/.ssh/deploy_key "${{ secrets.SSH_USER }}@${{ secrets.SSH_HOST }}" bash -s <<'EOF'
+          ssh -F ~/.ssh/config deploy-target bash -s <<'EOF'
           set -euo pipefail
           # Sync the deploy config from the repo into the runtime deploy dir,
           # preserving the local .env (secrets live only on the box, not in git).
