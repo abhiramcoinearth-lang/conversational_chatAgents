@@ -43,6 +43,10 @@ jobs:
         run: |
           ssh -i ~/.ssh/deploy_key "${{ secrets.SSH_USER }}@${{ secrets.SSH_HOST }}" bash -s <<'EOF'
           set -euo pipefail
+          # Sync the deploy config from the repo into the runtime deploy dir,
+          # preserving the local .env (secrets live only on the box, not in git).
+          cp /opt/chatagent/repo/deploy/docker-compose.prod.yml /opt/chatagent/deploy/docker-compose.prod.yml
+          cp /opt/chatagent/repo/deploy/Caddyfile /opt/chatagent/deploy/Caddyfile
           cd /opt/chatagent/deploy
           docker compose -f docker-compose.prod.yml up -d --build
           docker compose -f docker-compose.prod.yml ps
