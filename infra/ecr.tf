@@ -43,10 +43,8 @@ resource "aws_iam_role" "gha_ecr" {
       Condition = {
         StringEquals = {
           "token.actions.githubusercontent.com:aud" = "sts.amazonaws.com"
-        }
-        StringLike = {
-          # Only workflows in this repo may assume the role.
-          "token.actions.githubusercontent.com:sub" = "repo:abhiramcoinearth-lang/conversational_chatAgents:*"
+          # Only the main branch of this repo may assume the role (not PRs/other refs).
+          "token.actions.githubusercontent.com:sub" = "repo:abhiramcoinearth-lang/conversational_chatAgents:ref:refs/heads/main"
         }
       }
     }]
