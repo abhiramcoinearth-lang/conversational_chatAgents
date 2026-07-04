@@ -83,7 +83,7 @@ services:
     restart: unless-stopped
 
   app:
-    image: ghcr.io/abhiramcoinearth-lang/conversational_chatagents:$${IMAGE_TAG:-latest}
+    image: 637560253183.dkr.ecr.ap-south-1.amazonaws.com/conversational-chatagents:$${IMAGE_TAG:-latest}
     command: >
       uvicorn app.main:app --host 0.0.0.0 --port 5000 --workers 2
     environment:
