@@ -1,0 +1,54 @@
+name: Deploy to AWS (Mumbai)
+
+# CI/CD: on every push to main, sync the checked-out code to the g4dn.xlarge
+# EC2 instance over SSH and rebuild + restart the stack. The repo is private,
+# so code is pushed from the runner (which already has it via checkout) rather
+# than pulled on the instance — no git credentials live on the server.
+#
+# Required GitHub repo secrets (Settings -> Secrets and variables -> Actions):
+#   SSH_HOST         Elastic IP of the EC2 instance (terraform output: instance_public_ip)
+#   SSH_PRIVATE_KEY  Contents of the private key (terraform output: ssh_private_key)
+#   SSH_USER         "ubuntu"
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+concurrency:
+  group: deploy-production
+  cancel-in-progress: false
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Configure SSH
+        run: |
+          mkdir -p ~/.ssh
+          echo "${{ secrets.SSH_PRIVATE_KEY }}" > ~/.ssh/deploy_key
+          chmod 600 ~/.ssh/deploy_key
+          ssh-keyscan -H "${{ secrets.SSH_HOST }}" >> ~/.ssh/known_hosts 2>/dev/null
+
+      - name: Sync code to instance
+        run: |
+          rsync -az --delete \
+            --exclude '.git' --exclude 'data' --exclude 'frontend/dashboard/node_modules' \
+            -e "ssh -i ~/.ssh/deploy_key" \
+            ./ "${{ secrets.SSH_USER }}@${{ secrets.SSH_HOST }}:/opt/chatagent/repo/"
+
+      - name: Build + restart stack
+        run: |
+          ssh -i ~/.ssh/deploy_key "${{ secrets.SSH_USER }}@${{ secrets.SSH_HOST }}" bash -s <<'EOF'
+          set -euo pipefail
+          cd /opt/chatagent/deploy
+          docker compose -f docker-compose.prod.yml up -d --build
+          docker compose -f docker-compose.prod.yml ps
+          EOF
+
+      - name: Smoke test /health
+        run: |
+          sleep 15
+          curl -fsS "http://${{ secrets.SSH_HOST }}/health" | tee /dev/stderr

@@ -1,0 +1,10 @@
+# Terraform state (contains generated private key + DB passwords) — never commit
+*.tfstate
+*.tfstate.*
+# Provider plugins / local cache
+.terraform/
+# Generated SSH private key
+*.pem
+# Local var overrides
+*.tfvars
+*.auto.tfvars
