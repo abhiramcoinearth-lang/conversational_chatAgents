@@ -120,8 +120,12 @@ resource "aws_instance" "this" {
     region      = var.region
   })
 
-  # Recreate if the bootstrap script changes
-  user_data_replace_on_change = true
+  # user_data provisions a FRESH instance only; the running box is updated via
+  # CI/CD (compose files), so ignore user_data drift to avoid replacing a live,
+  # stateful instance. Delete this ignore_changes to force a rebuild from scratch.
+  lifecycle {
+    ignore_changes = [user_data]
+  }
 
   tags = { Name = "conversational-chatagents" }
 }

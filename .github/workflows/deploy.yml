@@ -13,6 +13,10 @@ name: Deploy to AWS (Mumbai)
 on:
   push:
     branches: [main]
+    # Terraform/docs changes don't affect the running app — skip redeploys for them.
+    paths-ignore:
+      - 'infra/**'
+      - '**.md'
   workflow_dispatch:
 
 concurrency:
