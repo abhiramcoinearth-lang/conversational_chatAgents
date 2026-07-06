@@ -1,11 +1,22 @@
 # Automatic HTTPS via Let's Encrypt for the chat API.
 # Requires a DNS A-record: chat.chatbucket.chat -> <Elastic IP>.
 chat.chatbucket.chat {
-	reverse_proxy app:5000
+	# Edge health: answered directly by Caddy (does not touch the app).
+	handle /healthz {
+		respond "ok" 200
+	}
+	handle {
+		reverse_proxy app:5000
+	}
 }
 
 # Fallback so the service is reachable over the raw public IP (HTTP)
 # before the DNS A-record is created / has propagated.
 :80 {
-	reverse_proxy app:5000
+	handle /healthz {
+		respond "ok" 200
+	}
+	handle {
+		reverse_proxy app:5000
+	}
 }

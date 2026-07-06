@@ -67,9 +67,15 @@ services:
       llama:
         condition: service_healthy
       redis:
-        condition: service_started
+        condition: service_healthy
       postgres:
-        condition: service_started
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD-SHELL", "python -c \"import urllib.request; urllib.request.urlopen('http://localhost:5000/health', timeout=5)\""]
+      interval: 30s
+      timeout: 6s
+      retries: 5
+      start_period: 40s
     logging:
       driver: awslogs
       options:
@@ -84,6 +90,11 @@ services:
     command: redis-server --appendonly yes
     volumes:
       - redis_data:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 30s
+      timeout: 5s
+      retries: 5
     restart: unless-stopped
 
   postgres:
@@ -94,6 +105,11 @@ services:
       POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
     volumes:
       - postgres_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U postgres -d chatagent"]
+      interval: 30s
+      timeout: 5s
+      retries: 5
     restart: unless-stopped
 
   caddy:
@@ -107,6 +123,11 @@ services:
       - caddy_config:/config
     depends_on:
       - app
+    healthcheck:
+      test: ["CMD-SHELL", "curl -fsS http://localhost/healthz || exit 1"]
+      interval: 30s
+      timeout: 5s
+      retries: 5
     restart: unless-stopped
 
 volumes:
