@@ -1,5 +1,6 @@
-from pydantic_settings import BaseSettings
 from functools import lru_cache
+
+from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
 class Settings(BaseSettings):
@@ -12,7 +13,9 @@ class Settings(BaseSettings):
     # Phase 2
     chroma_persist_dir: str = "./data/chromadb"
     embedding_model: str = "all-MiniLM-L6-v2"
-    translation_url: str = "https://mice-tires-intelligence-outlets.trycloudflare.com"
+
+    # Base URL only
+    translation_url: str = "https://translate.chatbucket.chat"
 
     # Phase 3
     redis_url: str = "redis://localhost:6379/0"
@@ -21,8 +24,7 @@ class Settings(BaseSettings):
     rate_limit: str = "60/minute"
     max_memory_turns: int = 20
 
-    class Config:
-        env_file = ".env"
+    model_config = SettingsConfigDict(env_file=".env")
 
 
 @lru_cache
