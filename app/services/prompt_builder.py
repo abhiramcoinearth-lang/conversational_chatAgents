@@ -14,6 +14,15 @@ from app.utils.logger import get_logger
 
 logger = get_logger("prompt")
 
+# Prepended to every persona so replies are consistently short and direct.
+BREVITY_RULE = (
+    "RESPONSE STYLE:\n"
+    "- Reply in ONE to THREE short sentences. Under 60 words.\n"
+    "- Skip greetings, apologies, and filler like 'I understand'.\n"
+    "- Answer the user's question directly; ask ONE follow-up if needed.\n"
+    "- No bullet lists unless the user asks for one."
+)
+
 
 def build_prompt(
     sector: str,
@@ -29,6 +38,9 @@ def build_prompt(
     """
 
     parts = []
+
+    # 0. Global brevity rule — enforced across every persona.
+    parts.append(BREVITY_RULE)
 
     # 1. Base sector system prompt
     parts.append(get_system_prompt(sector))

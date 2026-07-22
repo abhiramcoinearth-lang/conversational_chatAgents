@@ -68,7 +68,12 @@ PII_PATTERNS = {
     "phone": re.compile(r"\b(?:\+91[\-\s]?)?[6-9]\d{9}\b"),
     "email": re.compile(r"\b[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Z|a-z]{2,}\b"),
     "card_number": re.compile(r"\b\d{4}[\s-]?\d{4}[\s-]?\d{4}[\s-]?\d{4}\b"),
-    "account_number": re.compile(r"\b\d{9,18}\b"),
+    # Requires "account"/"a/c"/"acct" context so we don't redact order IDs,
+    # tracking numbers, or long random digits that aren't bank accounts.
+    "account_number": re.compile(
+        r"\b(?:a/?c|acct|account)(?:\s*(?:no\.?|number|#))?[:\s]*\d{9,18}\b",
+        re.IGNORECASE,
+    ),
 }
 
 SECTOR_BLOCKED_PHRASES = {

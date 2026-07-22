@@ -1,0 +1,340 @@
+================================================================================
+ARCHITECTURAL IMPROVEMENTS — IMPACT ANALYSIS
+================================================================================
+
+These are the four Tier-4 improvements from the code review. None are urgent;
+each has a specific problem it solves, a real cost to implement, and concrete
+knock-on effects (good and bad) you should understand before starting.
+
+Reading order: pick whichever section matches a pain point you actually feel.
+Don't build any of these because they sound clever — build them when the
+current code stops solving your problem.
+
+
+--------------------------------------------------------------------------------
+1. STREAMING RESPONSES (Server-Sent Events / WebSocket)
+--------------------------------------------------------------------------------
+
+WHAT IT IS
+Right now the client sends a message, waits 2–10 seconds, then gets the full
+reply in one shot. Streaming means the LLM's tokens are pushed to the client
+character-by-character as they're generated, so users see the reply "type
+itself out" the way ChatGPT does.
+
+Two transport options:
+  a) SSE (Server-Sent Events): one-way, server → client, over plain HTTP.
+     Simple. Works through most proxies. FastAPI has StreamingResponse.
+  b) WebSocket: two-way, low-latency. Overkill unless you also need the
+     client to push mid-stream signals (typing indicators, interrupts).
+
+WHY DO IT
+- Perceived latency drops dramatically. Time-to-first-token is ~300 ms
+  even on slow models. Users think the app is 3× faster than before.
+- Enables mid-generation UX: "stop generating" buttons, live token counts,
+  partial rendering (bullet lists appear as they stream).
+
+COSTS
+- llm_client.chat_completion has to switch from json() to iter_lines() and
+  yield chunks. That's ~30 lines of code but a completely different shape.
+- The /api/chat endpoint changes return type from JSON to a stream.
+- Every consumer breaks: the test UI needs an EventSource; the widget
+  needs a new render loop; curl tests can't just parse a single JSON blob.
+- Translation is the killer. The current pipeline translates the FULL
+  English reply after the LLM finishes. With streaming, you can't wait
+  for the full reply — you'd have to either:
+    (a) Stream English through untranslated (kills the multilingual UX),
+    (b) Buffer sentences and translate each one (adds 200-500ms per
+        sentence, defeats the streaming win),
+    (c) Skip translation entirely for non-English users.
+  There is no clean answer. Pick before you start.
+- Guardrail scanning also becomes streaming: you can't PII-redact until
+  the token sequence completes. Options: buffer for guardrails (lose
+  streaming benefit for the last few tokens) or accept partial leakage.
+- Redis memory persistence has to move to end-of-stream, not "before
+  return", or a client disconnect leaves memory half-written.
+
+IMPACT ON CURRENT CODE
+  chat.py         : major rewrite — returns StreamingResponse
+  llm_client.py   : add astream() method that yields chunks
+  frontend        : rewrite send() to consume EventSource
+  logging         : output field can only be captured post-stream
+  translation     : must decide policy per above
+  DB persistence  : moves to a background task after the stream ends
+
+WHEN TO ACTUALLY DO THIS
+- When a user complains "the bot feels slow" and you've already
+  optimized the model (smaller quant, more layers on GPU).
+- When you're building a chat UI where the "typing" animation is
+  a product requirement.
+
+DON'T DO THIS IF
+- Your median reply is short (< 200 tokens). At that length users
+  don't notice the difference.
+- You need translation to work for all users.
+
+
+--------------------------------------------------------------------------------
+2. LANGGRAPH REFACTOR
+--------------------------------------------------------------------------------
+
+WHAT IT IS
+LangGraph is a library from the LangChain team for building LLM pipelines
+as explicit state machines. Instead of chat.py being a linear sequence of
+awaits, you'd model each step as a node in a graph with edges deciding
+what runs next based on state.
+
+Your current pipeline in graph form:
+    sanitize -> translate_in -> guardrail_in -> [is_custom? branch]
+       -> [built-in: classify -> rag -> build_prompt]
+       -> [custom:   persona lookup]
+       -> llm -> escalate? -> guardrail_out -> translate_out -> respond
+
+WHY DO IT
+- Loops and retries become natural. Today, if the LLM outputs bad JSON
+  in intent classification, you fall through to "general_query". With
+  a graph, you can add "if parse failed, retry with a stricter prompt,
+  max 2 times".
+- Conditional branching gets cleaner. The is_custom split today is a big
+  if/else in chat.py. In LangGraph it's an edge condition.
+- Checkpointing for free. LangGraph has a MemorySaver + PostgresSaver
+  that captures graph state after each node. If the server crashes
+  mid-request, you can resume from the last node. Also enables "undo"
+  and "edit last message" flows.
+- Tool use becomes tractable. If you ever want the agent to call
+  external APIs (check order status, look up appointment slots),
+  LangGraph's tool-node abstraction handles the loop
+  (llm -> tool_call -> tool_result -> llm) without you writing state.
+- Easier to visualize and debug. LangGraph produces mermaid diagrams
+  of your graph. Great for onboarding new team members.
+
+COSTS
+- Learning curve. LangGraph has its own concepts (StateGraph, checkpointers,
+  channels) that don't map 1:1 to Python async code. A team member joining
+  next month has to learn it before touching chat.py.
+- Extra dependency. langgraph + langchain-core. Adds ~50 MB to your image,
+  pulls in pydantic-based schema definitions, and locks you into their
+  compatibility matrix.
+- You'd rewrite chat.py essentially from scratch. The old code becomes
+  unreadable next to the new (nodes) style, so half-migration is worse
+  than no migration.
+- Debugging shifts from "step into a function" to "trace state through
+  a graph". Different mental model. Some engineers hate it.
+- Redis-backed memory in your current code is very simple. LangGraph
+  wants YOU to use its checkpointer instead, which means either:
+    (a) Two memory systems side by side (confusing),
+    (b) Delete memory_manager.py and let LangGraph own state.
+  Either way, the migration is non-trivial.
+- LangGraph is opinionated about how state flows. If your future needs
+  don't fit its patterns (e.g., you want streaming AND branching AND
+  external tool loops all at once), you'll fight the framework.
+
+IMPACT ON CURRENT CODE
+  chat.py            : rewrite as a StateGraph, ~200 lines become ~300
+  memory_manager.py  : possibly redundant, replaced by checkpointer
+  requirements.txt   : add langgraph, langchain-core
+  All service files  : mostly unchanged — they become node bodies
+  Tests              : brand new test harness — you test node functions
+                       and state transitions, not HTTP paths
+
+WHEN TO ACTUALLY DO THIS
+- When you want retry logic on multiple points in the pipeline (intent
+  classification, LLM output validation, tool calls).
+- When you introduce agent-with-tools patterns (order lookup, DB writes).
+- When you need conversation branching (e.g., "let's back up two turns").
+- When you have a team of 3+ engineers and need visual documentation
+  of the flow that stays in sync with code.
+
+DON'T DO THIS IF
+- Your pipeline is stable and doesn't need retries or branching.
+- You're a single developer moving fast; the framework will slow you down.
+- You value being able to read your own code without a docs tab open.
+
+
+--------------------------------------------------------------------------------
+3. PROMETHEUS METRICS
+--------------------------------------------------------------------------------
+
+WHAT IT IS
+prometheus-client is already in requirements.txt but nothing is instrumented.
+Prometheus is a time-series database that scrapes an HTTP endpoint (usually
+/metrics on your app) at fixed intervals (default 15s) and stores numeric
+counters, gauges, and histograms. Grafana renders it as dashboards.
+
+What you'd add:
+  - Counter: chat_requests_total{sector, tenant, status}
+  - Histogram: chat_latency_seconds{sector, stage}
+  - Gauge: active_llm_slots
+  - Counter: guardrail_blocks_total{reason}
+  - Counter: llm_errors_total
+  - Counter: translation_failures_total{src, tgt}
+
+WHY DO IT
+- Real-time visibility into what your production system is doing. When
+  someone reports "the bot is slow", you can see whether the LLM,
+  translation, or RAG is the bottleneck within seconds.
+- Alerting. Grafana can page you when error rate > 5%, latency > 10s,
+  guardrail block rate spikes (possible attack).
+- Capacity planning. Histograms tell you your 95th-percentile latency;
+  counters tell you which sector is hottest.
+- Data source for business dashboards. Product team can see "custom
+  personas created per day" without touching the database.
+
+COSTS
+- Instrumentation everywhere. Each service file needs 3-5 lines to
+  create a Counter/Histogram at module load and call .inc() / .observe()
+  at key points. That's ~50 lines total spread across chat.py, llm_client.py,
+  translator.py, guardrails.py, rag_retriever.py.
+- You have to run Prometheus somewhere. docker-compose.yml already
+  includes it, but you need to write a prometheus.yml config that
+  points at your app. And Grafana needs dashboards imported.
+- Cardinality risk. If you put tenant_id or session_id in a label,
+  every unique value creates a new time series. A busy app with 10k
+  tenants would explode Prometheus memory. Rule: labels have
+  low-cardinality values only (sector: 6 values, status: 3 values).
+  session_id: NEVER a label.
+- Metrics leak business data. If you export "high-value tenant spending"
+  as a Prometheus label, and metrics are exposed unauthenticated at
+  /metrics, that's a leak. Put /metrics behind auth or bind to localhost.
+- Adds ~10ms overhead per request for the instrumented code paths.
+  Negligible per request but adds up under load.
+
+IMPACT ON CURRENT CODE
+  main.py            : mount prometheus_asgi_app on /metrics, add auth
+  chat.py            : ~5 metric calls around each service boundary
+  llm_client.py      : histogram for latency, counter for errors
+  translator.py      : histogram for translation latency + counter
+  guardrails.py      : counter for blocks by reason
+  Prometheus config  : new scrape target, retention rules
+  Grafana            : new dashboards (or import community ones)
+
+WHEN TO ACTUALLY DO THIS
+- When you have real users and can't answer "how is production doing?"
+  without SSH-ing into the box.
+- When you want to alert your team about production issues.
+- Before your first serious incident, so you have data to debug from.
+
+DON'T DO THIS IF
+- You're pre-launch or in demo mode. Nobody looks at graphs of a
+  system nobody uses.
+- Your analytics endpoints (once wired to Postgres) give you enough
+  visibility for now.
+
+
+--------------------------------------------------------------------------------
+4. ALEMBIC MIGRATIONS
+--------------------------------------------------------------------------------
+
+WHAT IT IS
+Alembic is SQLAlchemy's schema migration tool. Instead of relying on
+Base.metadata.create_all() at startup (which only creates tables that
+don't exist and never modifies them), Alembic maintains a versioned
+sequence of migration scripts. Each script says "from state N, do these
+DDL statements to reach state N+1", and there's an alembic_version
+table in the DB that tracks where you are.
+
+Directory structure it'd add:
+  alembic/
+    versions/
+      001_initial.py           # CREATE TABLE conversation_logs...
+      002_add_lang_column.py   # ALTER TABLE conversation_logs ADD lang...
+      003_add_translated.py    # ...
+    env.py
+    script.py.mako
+  alembic.ini
+
+Deployment flow becomes:
+  1. Deploy new code that expects new schema
+  2. Run `alembic upgrade head` (adds missing columns/tables)
+  3. Start the app
+
+WHY DO IT
+- Schema changes without downtime. Today, adding a column to
+  conversation_logs requires either dropping the table (data loss) or
+  running raw SQL by hand. With Alembic, you write one script and it
+  applies safely.
+- Rollbacks. Every migration has a downgrade() function. Bad deploy?
+  `alembic downgrade -1` puts the schema back.
+- Team coordination. Two developers making conflicting schema changes
+  can be merged into a linear sequence of migrations. Without Alembic,
+  you'd have to reconcile manually and hope nobody deployed the wrong
+  order.
+- Environment parity. Dev, staging, prod all run the same migrations.
+  You know they have identical schemas.
+- Audit trail. `alembic history` shows every schema change that ever
+  shipped, with commit messages.
+
+COSTS
+- Setup overhead. `alembic init`, configure alembic.ini to read
+  DATABASE_URL, wire env.py to import your Base metadata. Then delete
+  the create_all() call from init_db(). ~1 hour first time.
+- Every schema change now needs a migration script. Adding one column
+  goes from "edit database.py, restart" to "edit database.py, run
+  alembic revision --autogenerate, review the generated script, run
+  alembic upgrade head". Slower loop.
+- Autogenerate is not magic. It misses:
+    - Column type changes (VARCHAR(64) to VARCHAR(128))
+    - Server default changes
+    - Some index modifications
+  You have to review every generated script.
+- Data migrations are painful. If you rename a column, Alembic can't
+  automatically copy the values; you write the SQL manually in the
+  migration script.
+- If you get out of sync (someone runs create_all(), then you try
+  Alembic on top), untangling is hell. Have to STAMP the current
+  DB state, then generate a "catch-up" migration.
+- CI complexity. Your test DB needs migrations run before tests.
+  Your deploy pipeline needs a migration step before the app starts.
+
+IMPACT ON CURRENT CODE
+  db_session.py         : remove Base.metadata.create_all(), keep engine
+  requirements.txt      : alembic already there
+  alembic/              : new directory, ~4 files
+  alembic.ini           : new file at project root
+  Dockerfile            : new step to run migrations before uvicorn
+  docker-compose.yml    : same
+  CI                    : add `alembic upgrade head` before tests
+
+WHEN TO ACTUALLY DO THIS
+- Before your first production deploy. Not after.
+- Before you make your second schema change. The first change is
+  usually "add whatever columns I need"; the second is "actually
+  restructure to fix the first design".
+- When you get a second engineer, so you have a merge-safe way to
+  ship schema changes.
+
+DON'T DO THIS IF
+- Your DB has zero data you care about losing (demo mode, dev only).
+- You'll never have another schema change (you won't; you always
+  need another column eventually).
+- You're pre-Postgres and only using ChromaDB and Redis. Neither
+  needs migrations.
+
+
+--------------------------------------------------------------------------------
+CROSS-CUTTING NOTES
+--------------------------------------------------------------------------------
+
+DEPENDENCIES BETWEEN THESE IMPROVEMENTS
+- Alembic should come BEFORE any schema changes are needed by
+  Prometheus (if you decide to persist metric snapshots) or LangGraph
+  (if you use PostgresSaver for checkpointing).
+- Prometheus should come BEFORE streaming, so you can compare "time to
+  full response" (old) vs "time to first token" (new) with data.
+- LangGraph and streaming compete for the "next big rewrite" slot. Do
+  one, then evaluate before the other.
+
+WHAT WILL FEEL PRESSING FIRST
+Usually in this order:
+  1. Alembic — as soon as you deploy anywhere real.
+  2. Prometheus — as soon as you have paying users and outages hurt.
+  3. Streaming — when users complain about perceived speed.
+  4. LangGraph — when your pipeline logic outgrows a single async function.
+
+ORDER I'D RECOMMEND
+Alembic → Prometheus → (pause 3 months, measure) → streaming OR LangGraph
+depending on what's actually painful by then.
+
+
+--------------------------------------------------------------------------------
+END
+--------------------------------------------------------------------------------

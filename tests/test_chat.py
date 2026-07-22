@@ -3,6 +3,9 @@
 import pytest
 from httpx import AsyncClient, ASGITransport
 from app.main import app
+from app.config import get_settings
+
+AUTH_HEADERS = {"X-API-Key": get_settings().api_secret_key}
 
 
 @pytest.mark.asyncio
@@ -19,8 +22,7 @@ async def test_health():
 async def test_root_redirects_to_ui():
     transport = ASGITransport(app=app)
     async with AsyncClient(transport=transport, base_url="http://test") as client:
-        resp = await client.get("/")
-        # Root redirects to the bundled test UI.
+        resp = await client.get("/", follow_redirects=False)
         assert resp.status_code == 307
         assert "/ui/" in resp.headers.get("location", "")
 
@@ -29,40 +31,63 @@ async def test_root_redirects_to_ui():
 async def test_sectors_listed():
     transport = ASGITransport(app=app)
     async with AsyncClient(transport=transport, base_url="http://test") as client:
-        resp = await client.get("/api/agents/sectors")
+        resp = await client.get("/api/agents/sectors", headers=AUTH_HEADERS)
         assert resp.status_code == 200
         data = resp.json()
         assert len(data["sectors"]) == 6
 
 
-@pytest.mark.xfail(
-    reason="app does not currently enforce 422 on empty message / invalid sector",
-    strict=False,
-)
 @pytest.mark.asyncio
-async def test_chat_validation():
+async def test_missing_api_key_rejected():
     transport = ASGITransport(app=app)
     async with AsyncClient(transport=transport, base_url="http://test") as client:
-        # Empty message should fail
-        resp = await client.post("/api/chat", json={"message": "", "sector": "retail"})
+        resp = await client.get("/api/agents/sectors")
+        assert resp.status_code == 401
+
+
+@pytest.mark.asyncio
+async def test_wrong_api_key_rejected():
+    transport = ASGITransport(app=app)
+    async with AsyncClient(transport=transport, base_url="http://test") as client:
+        resp = await client.get(
+            "/api/agents/sectors", headers={"X-API-Key": "wrong-key"}
+        )
+        assert resp.status_code == 403
+
+
+@pytest.mark.asyncio
+async def test_chat_validation():
+    """Empty message and invalid sector should be rejected by Pydantic."""
+    transport = ASGITransport(app=app)
+    async with AsyncClient(transport=transport, base_url="http://test") as client:
+        # Empty message
+        resp = await client.post(
+            "/api/chat",
+            json={"message": "", "sector": "retail"},
+            headers=AUTH_HEADERS,
+        )
         assert resp.status_code == 422
 
-        # Invalid sector should fail
-        resp = await client.post("/api/chat", json={"message": "hello", "sector": "invalid"})
+        # Invalid sector (not built-in and no custom_ prefix)
+        resp = await client.post(
+            "/api/chat",
+            json={"message": "hello", "sector": "invalid"},
+            headers=AUTH_HEADERS,
+        )
         assert resp.status_code == 422
 
 
 @pytest.mark.integration
 @pytest.mark.asyncio
 async def test_chat_success():
-    """This test requires the llama.cpp server running (integration only)."""
+    """Requires the LLM server running (integration only)."""
     transport = ASGITransport(app=app)
     async with AsyncClient(transport=transport, base_url="http://test") as client:
-        resp = await client.post("/api/chat", json={
-            "message": "What is your return policy?",
-            "sector": "retail",
-        })
-        # Will be 503 if llama.cpp is not running
+        resp = await client.post(
+            "/api/chat",
+            json={"message": "What is your return policy?", "sector": "retail"},
+            headers=AUTH_HEADERS,
+        )
         if resp.status_code == 200:
             data = resp.json()
             assert "reply" in data

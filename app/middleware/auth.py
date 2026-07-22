@@ -1,27 +1,35 @@
-"""Phase 3: API key authentication middleware."""
+"""API key authentication middleware."""
 
-from fastapi import Request, HTTPException
+from fastapi import Request
 from starlette.middleware.base import BaseHTTPMiddleware
+from starlette.responses import JSONResponse
 from app.config import get_settings
 
 settings = get_settings()
 
-# Public endpoints that don't need auth
-PUBLIC_PATHS = {"/", "/health", "/docs", "/openapi.json", "/redoc"}
+# Exact-match public paths that don't need auth
+PUBLIC_PATHS = {"/", "/health", "/docs", "/openapi.json", "/redoc", "/api/me", "/favicon.ico"}
+
+# Any request whose path starts with one of these prefixes is public
+PUBLIC_PREFIXES = ("/ui/",)
 
 
 class AuthMiddleware(BaseHTTPMiddleware):
     async def dispatch(self, request: Request, call_next):
-        if request.url.path in PUBLIC_PATHS:
+        # Allow browser CORS preflight
+        if request.method == "OPTIONS":
+            return await call_next(request)
+
+        path = request.url.path
+        if path in PUBLIC_PATHS or any(path.startswith(p) for p in PUBLIC_PREFIXES):
             return await call_next(request)
 
         api_key = request.headers.get("X-API-Key")
         if not api_key:
-            raise HTTPException(status_code=401, detail="Missing API key")
-
-        # Phase 4: Validate against tenant database
-        # For now, check against a single secret
+            return JSONResponse(
+                status_code=401, content={"detail": "Missing X-API-Key header"}
+            )
         if api_key != settings.api_secret_key:
-            raise HTTPException(status_code=403, detail="Invalid API key")
+            return JSONResponse(status_code=403, content={"detail": "Invalid API key"})
 
         return await call_next(request)

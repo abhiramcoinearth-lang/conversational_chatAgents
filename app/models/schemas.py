@@ -1,6 +1,8 @@
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, field_validator
 from typing import Optional
 from datetime import datetime
+
+BUILT_IN_SECTORS = {"retail", "education", "medical", "real_estate", "banking", "tourism"}
 
 
 class ChatRequest(BaseModel):
@@ -10,6 +12,15 @@ class ChatRequest(BaseModel):
     tenant_id: Optional[str] = None
     src_lang: str = Field(default="auto")
     lang: str = Field(default="ENGLISH")
+
+    @field_validator("sector")
+    @classmethod
+    def _validate_sector(cls, v: str) -> str:
+        if v in BUILT_IN_SECTORS or v.startswith("custom_"):
+            return v
+        raise ValueError(
+            f"Invalid sector '{v}'. Must be one of {sorted(BUILT_IN_SECTORS)} or a 'custom_<id>' persona."
+        )
 
 
 class ChatResponse(BaseModel):

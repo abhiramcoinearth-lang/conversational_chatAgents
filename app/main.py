@@ -11,6 +11,7 @@ from app.routers.persona import router as persona_router
 from app.services.llm_client import llm_client
 from app.services.memory_manager import memory_manager
 from app.models.db_session import init_db, shutdown_db
+from app.middleware.auth import AuthMiddleware
 from app.models.schemas import HealthResponse
 
 settings = get_settings()
@@ -39,6 +40,7 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
+app.add_middleware(AuthMiddleware)
 
 app.include_router(chat.router)
 app.include_router(agents.router)

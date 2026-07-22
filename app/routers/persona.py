@@ -1,6 +1,7 @@
 import json
 import uuid
 from typing import Optional
+import httpx
 from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel, Field
 from app.models.schemas import ChatRequest, ChatResponse
@@ -64,13 +65,19 @@ async def create_persona(data: PersonaCreate):
             max_tokens=500,
             temperature=0.1,
         )
-
         raw = result["text"].strip()
         raw = raw.replace("```json", "").replace("```", "").strip()
         extracted = json.loads(raw)
-
-    except (json.JSONDecodeError, Exception) as e:
-        logger.warning(f"Extraction failed: {e}")
+    except httpx.HTTPError as e:
+        # LLM server down / unreachable — this is a real problem, don't hide it.
+        logger.error(f"Persona extraction — LLM unreachable: {e}")
+        raise HTTPException(
+            status_code=503,
+            detail="LLM service unavailable; cannot extract persona metadata.",
+        )
+    except (json.JSONDecodeError, KeyError, ValueError) as e:
+        # LLM answered but the JSON is malformed. Fall back to a stub.
+        logger.warning(f"Persona extraction — JSON parse failed: {e}")
         extracted = {
             "agent_name": data.name or "Assistant",
             "company": "AI Assistant",
