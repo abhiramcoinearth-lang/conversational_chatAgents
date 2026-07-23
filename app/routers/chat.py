@@ -105,12 +105,13 @@ async def chat(request: ChatRequest):
     user_lang = request.lang
     tenant_id = request.tenant_id
 
-    # Translate to English so the pipeline operates in one language.
-    user_message = (
-        user_message_original
-        if src_lang.upper() == "ENGLISH"
-        else await to_english(user_message_original, src_lang=src_lang)
-    )
+    # Translate input ONLY when the user explicitly picked a specific non-English
+    # source language. "auto" means "let the LLM handle whatever the user typed"
+    # — Gemini is multilingual and doesn't need English pre-translation.
+    if src_lang.upper() in ("ENGLISH", "AUTO"):
+        user_message = user_message_original
+    else:
+        user_message = await to_english(user_message_original, src_lang=src_lang)
 
     logger.info(
         f"[{session_id}] sector={sector} src={src_lang} tgt={user_lang} msg={user_message[:80]}..."

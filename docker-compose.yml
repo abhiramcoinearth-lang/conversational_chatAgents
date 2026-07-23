@@ -7,7 +7,9 @@ services:
     ports:
       - "5000:5000"
     environment:
-      - LLAMA_SERVER_URL=http://host.docker.internal:8090
+      - GEMINI_API_KEY=${GEMINI_API_KEY}
+      - GEMINI_MODEL=${GEMINI_MODEL:-gemini-2.5-flash}
+      - GEMINI_BASE_URL=${GEMINI_BASE_URL:-https://generativelanguage.googleapis.com/v1beta}
       - REDIS_URL=redis://redis:6379/0
       - DATABASE_URL=postgresql+asyncpg://postgres:password@postgres:5432/chatagent
       - CHROMA_PERSIST_DIR=/app/data/chromadb

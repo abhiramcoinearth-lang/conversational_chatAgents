@@ -4,11 +4,15 @@ from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
 class Settings(BaseSettings):
-    # Phase 1
-    llama_server_url: str = "http://localhost:8090"
+    # App
     app_host: str = "0.0.0.0"
     app_port: int = 5000
     debug: bool = True
+
+    # Gemini LLM
+    gemini_api_key: str = ""
+    gemini_model: str = "gemini-3.6-flash"
+    gemini_base_url: str = "https://generativelanguage.googleapis.com/v1beta"
 
     # Phase 2
     chroma_persist_dir: str = "./data/chromadb"

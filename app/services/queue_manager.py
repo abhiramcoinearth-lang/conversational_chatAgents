@@ -1,7 +1,7 @@
-"""Phase 3: Request queue manager.
+"""Request queue manager.
 
-When the GPU is busy, queue incoming requests instead of crashing.
-Uses Redis as a simple FIFO queue with concurrency control.
+Caps simultaneous LLM requests so we don't slam the Gemini API with
+unbounded concurrency (rate-limit friendly, avoids 429s).
 """
 
 import asyncio
@@ -12,7 +12,8 @@ from app.utils.logger import get_logger
 logger = get_logger("queue")
 settings = get_settings()
 
-MAX_CONCURRENT = 4  # Max simultaneous LLM requests (tune based on GPU)
+# Gemini free-tier is ~15 RPM. Raise this if you're on paid quota.
+MAX_CONCURRENT = 8
 
 
 class QueueManager:

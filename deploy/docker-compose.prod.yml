@@ -1,50 +1,14 @@
 # Production stack for the Chat Agent Platform.
-# Runs on a single g4dn.xlarge (NVIDIA T4) EC2 instance in AWS Mumbai (ap-south-1).
+# LLM is now Google Gemini (API-only) — no GPU host needed.
 #
-#   caddy  -> HTTPS termination for chat.chatbucket.chat, reverse-proxies to app
-#   app    -> FastAPI (this repo's Dockerfile)
-#   llama  -> llama.cpp server (CUDA) hosting a Gemma 3 GGUF on the T4 GPU
-#   redis  -> session memory
+#   caddy    -> HTTPS termination for chat.chatbucket.chat, reverse-proxies to app
+#   app      -> FastAPI (this repo's Dockerfile), calls Gemini via API key
+#   redis    -> session memory
 #   postgres -> conversation logs
 #
 # Build context for `app` is the cloned repo (../repo). Secrets come from ./.env.
 
 services:
-  llama:
-    image: ghcr.io/ggml-org/llama.cpp:server-cuda
-    # -hf pulls the GGUF straight from Hugging Face (unsloth repos are ungated).
-    # --jinja loads the model's built-in chat template so /v1/chat/completions
-    # applies Gemma 3 formatting automatically. -ngl 99 offloads all layers to GPU.
-    command: >
-      -hf ${LLAMA_MODEL:-unsloth/gemma-3-12b-it-GGUF:Q4_K_M}
-      --host 0.0.0.0 --port 8090
-      -c ${LLAMA_CTX:-8192} -ngl 99 --jinja
-    volumes:
-      - llama_cache:/root/.cache/llama.cpp
-    ports:
-      - "127.0.0.1:8090:8090"   # localhost only, for debugging
-    deploy:
-      resources:
-        reservations:
-          devices:
-            - driver: nvidia
-              count: all
-              capabilities: [gpu]
-    healthcheck:
-      test: ["CMD-SHELL", "curl -sf http://localhost:8090/health || exit 1"]
-      interval: 20s
-      timeout: 5s
-      retries: 30
-      start_period: 600s   # first boot downloads the model (~7GB)
-    logging:
-      driver: awslogs
-      options:
-        awslogs-region: ap-south-1
-        awslogs-group: /chatagent/app
-        awslogs-stream: llama
-        awslogs-create-group: "true"
-    restart: unless-stopped
-
   app:
     # Immutable image built + pushed by CI to Amazon ECR. IMAGE_TAG (a git SHA)
     # is set in .env by the deploy job; falls back to :latest.
@@ -52,7 +16,9 @@ services:
     command: >
       uvicorn app.main:app --host 0.0.0.0 --port 5000 --workers 2
     environment:
-      - LLAMA_SERVER_URL=http://llama:8090
+      - GEMINI_API_KEY=${GEMINI_API_KEY}
+      - GEMINI_MODEL=${GEMINI_MODEL:-gemini-2.5-flash}
+      - GEMINI_BASE_URL=${GEMINI_BASE_URL:-https://generativelanguage.googleapis.com/v1beta}
       - REDIS_URL=redis://redis:6379/0
       - DATABASE_URL=postgresql+asyncpg://postgres:${POSTGRES_PASSWORD}@postgres:5432/chatagent
       - CHROMA_PERSIST_DIR=/app/data/chromadb
@@ -64,8 +30,6 @@ services:
     volumes:
       - app_data:/app/data
     depends_on:
-      llama:
-        condition: service_healthy
       redis:
         condition: service_healthy
       postgres:
@@ -131,7 +95,6 @@ services:
     restart: unless-stopped
 
 volumes:
-  llama_cache:
   app_data:
   redis_data:
   postgres_data:
