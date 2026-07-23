@@ -11,7 +11,6 @@ from app.routers.persona import router as persona_router
 from app.services.llm_client import llm_client
 from app.services.memory_manager import memory_manager
 from app.models.db_session import init_db, shutdown_db
-from app.middleware.auth import AuthMiddleware
 from app.models.schemas import HealthResponse
 
 settings = get_settings()
