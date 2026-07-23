@@ -109,11 +109,14 @@ jobs:
             ./ "${{ secrets.SSH_USER }}@${{ secrets.SSH_HOST }}:/opt/chatagent/repo/"
 
       - name: Pull image + restart stack
+        env:
+          GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
         run: |
           ssh -i "$HOME/.ssh/deploy_key" \
             -o ServerAliveInterval=15 -o ServerAliveCountMax=4 \
             -o ConnectTimeout=20 -o StrictHostKeyChecking=accept-new \
-            "${{ secrets.SSH_USER }}@${{ secrets.SSH_HOST }}" bash -s <<'EOF'
+            "${{ secrets.SSH_USER }}@${{ secrets.SSH_HOST }}" \
+            "GEMINI_API_KEY='$GEMINI_API_KEY' bash -s" <<'EOF'
           set -euo pipefail
           # Authenticate to ECR using the instance's IAM role (no static creds).
           aws ecr get-login-password --region ap-south-1 \
@@ -128,8 +131,15 @@ jobs:
           else
             echo "IMAGE_TAG=${{ github.sha }}" >> .env
           fi
+          # Keep the LLM credential in sync with the repo secret (rewrite, don't duplicate).
+          touch .env
+          grep -v '^GEMINI_API_KEY=' .env > .env.tmp || true
+          printf 'GEMINI_API_KEY=%s\n' "$GEMINI_API_KEY" >> .env.tmp
+          mv .env.tmp .env
+          chmod 600 .env
           docker compose -f docker-compose.prod.yml pull app
-          docker compose -f docker-compose.prod.yml up -d
+          # --remove-orphans drops the retired llama.cpp container.
+          docker compose -f docker-compose.prod.yml up -d --remove-orphans
           docker compose -f docker-compose.prod.yml ps
           docker logout 637560253183.dkr.ecr.ap-south-1.amazonaws.com || true
           EOF
