@@ -48,7 +48,7 @@ pip install -r requirements.txt
 cp .env.example .env
 # then edit .env:
 #   GEMINI_API_KEY=AIzaSy...your-real-key
-#   GEMINI_MODEL=gemini-flash-latest   # or gemini-2.5-pro etc.
+#   GEMINI_MODEL=gemini-3.6-flash
 
 # 3. Start Redis (optional but recommended)
 redis-server &

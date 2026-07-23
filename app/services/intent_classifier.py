@@ -105,6 +105,7 @@ async def classify_intent(message: str, sector: str) -> IntentResult:
         message=message,
     )
 
+    raw = ""
     try:
         result = await llm_client.chat_completion(
             messages=[{"role": "user", "content": prompt}],
@@ -134,13 +135,16 @@ async def classify_intent(message: str, sector: str) -> IntentResult:
         )
         return intent_result
 
-    except (json.JSONDecodeError, KeyError) as e:
+    # Classification is advisory — never let it take the request down. A dead
+    # LLM (auth error, timeout) must fall through to the guarded generation
+    # call in the chat router, which escalates properly instead of 500-ing.
+    except Exception as e:
         logger.warning(
-            f"Intent parse failed: {e}, raw: {result.get('text', '')[:100]}",
+            f"Intent classification failed: {type(e).__name__}: {e}, raw: {raw[:100]}",
             extra={
                 "sector": sector,
                 "user_message": message,
-                "raw_llm_output": result.get("text", "") if "result" in dir() else "",
+                "raw_llm_output": raw,
                 "error": str(e),
             },
         )

@@ -112,6 +112,12 @@ jobs:
         env:
           GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
         run: |
+          # An empty secret would silently deploy an app with no LLM credential,
+          # which only shows up later as a 500 from /api/chat.
+          if [ -z "$GEMINI_API_KEY" ]; then
+            echo "::error::GEMINI_API_KEY repo secret is empty or unset — refusing to deploy."
+            exit 1
+          fi
           ssh -i "$HOME/.ssh/deploy_key" \
             -o ServerAliveInterval=15 -o ServerAliveCountMax=4 \
             -o ConnectTimeout=20 -o StrictHostKeyChecking=accept-new \
@@ -147,12 +153,24 @@ jobs:
       - name: Smoke test /health
         run: |
           sleep 15
-          curl -fsS "https://chat.chatbucket.chat/health" | tee /dev/stderr
+          health=$(curl -fsS "https://chat.chatbucket.chat/health")
+          echo "$health"
+          # "degraded" means the app is up but can't reach Gemini (bad/missing
+          # API key). Fail here rather than letting the e2e test 500 opaquely.
+          echo "$health" | grep -q '"llm_status":"connected"' || {
+            echo "::error::LLM is disconnected — check the GEMINI_API_KEY secret and that the Generative Language API is enabled."
+            exit 1
+          }
 
       - name: E2E chat test
         run: |
-          body=$(curl -fsS -m 120 -X POST "https://chat.chatbucket.chat/api/chat" \
+          # -f is deliberately omitted: on a 5xx we want the response body in
+          # the log, not just "curl: (22)".
+          code=$(curl -sS -m 120 -o /tmp/chat.json -w '%{http_code}' \
+            -X POST "https://chat.chatbucket.chat/api/chat" \
             -H "Content-Type: application/json" \
             -d '{"message":"pipeline e2e check","sector":"retail","src_lang":"ENGLISH","lang":"ENGLISH"}')
-          echo "$body"
-          echo "$body" | grep -q '"reply"' || { echo "no reply in response"; exit 1; }
+          echo "HTTP $code"
+          cat /tmp/chat.json; echo
+          [ "$code" = "200" ] || { echo "::error::/api/chat returned HTTP $code"; exit 1; }
+          grep -q '"reply"' /tmp/chat.json || { echo "no reply in response"; exit 1; }
