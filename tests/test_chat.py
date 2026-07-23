@@ -38,24 +38,6 @@ async def test_sectors_listed():
 
 
 @pytest.mark.asyncio
-async def test_missing_api_key_rejected():
-    transport = ASGITransport(app=app)
-    async with AsyncClient(transport=transport, base_url="http://test") as client:
-        resp = await client.get("/api/agents/sectors")
-        assert resp.status_code == 401
-
-
-@pytest.mark.asyncio
-async def test_wrong_api_key_rejected():
-    transport = ASGITransport(app=app)
-    async with AsyncClient(transport=transport, base_url="http://test") as client:
-        resp = await client.get(
-            "/api/agents/sectors", headers={"X-API-Key": "wrong-key"}
-        )
-        assert resp.status_code == 403
-
-
-@pytest.mark.asyncio
 async def test_chat_validation():
     """Empty message and invalid sector should be rejected by Pydantic."""
     transport = ASGITransport(app=app)

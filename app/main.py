@@ -40,7 +40,8 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
-app.add_middleware(AuthMiddleware)
+# API-key auth is available in app.middleware.auth.AuthMiddleware but is
+# currently disabled by choice — re-enable with `app.add_middleware(AuthMiddleware)`.
 
 app.include_router(chat.router)
 app.include_router(agents.router)
